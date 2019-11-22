@@ -2,7 +2,7 @@
 
 import itertools as itt
 
-import numpy as np
+import autograd.numpy as np
 import pandas as pd
 import os
 import sys
@@ -15,11 +15,6 @@ import numba
 import emcee
 
 from multiprocessing import Pool, Process, cpu_count
-
-### Define common functions and load metadata ###
-
-pad_times_df = pd.read_csv('pad_times.csv')
-pad_times_df = pad_times_df.loc[(pad_times_df.frame>=5)&(pad_times_df.frame<41),:]
 
 @numba.jit(nopython=True, cache=True)
 def calc_diffusion(A, D):
