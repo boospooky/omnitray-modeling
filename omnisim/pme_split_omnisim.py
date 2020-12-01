@@ -37,6 +37,21 @@ def laplace_op_noflux_boundaries(A, D):
     D[:,-1,-1] = A[:,-1,-2] + A[:,-2,-1] - 2*A[:,-1,-1]
 
 @numba.jit(nopython=True, cache=True)
+def laplace_op_noflux_boundaries_onespec(A, D):
+    # Middle
+    D[1:-1,1:-1] = A[1:-1, 2:] + A[1:-1, :-2] + A[:-2, 1:-1] + A[2:, 1:-1] - 4*A[1:-1, 1:-1]
+    # Edges
+    D[0,1:-1] = A[0, 2:] + A[0, :-2] + A[1, 1:-1] - 3*A[0, 1:-1]
+    D[-1,1:-1] = A[-1, 2:] + A[-1, :-2] + A[-2, 1:-1] - 3*A[-1, 1:-1]
+    D[1:-1,0] = A[2:,0] + A[:-2,0] + A[1:-1,1] - 3*A[1:-1,0]
+    D[1:-1,-1] = A[2:,-1] + A[:-2,-1] + A[1:-1,-2] - 3*A[1:-1,-1]
+    # Corners
+    D[0,0] = A[0,1] + A[1,0] - 2*A[0,0]
+    D[-1,0] = A[-1,1] + A[-2,0] - 2*A[-1,0]
+    D[0,-1] = A[0,-2] + A[1,-1] - 2*A[0,-1]
+    D[-1,-1] = A[-1,-2] + A[-2,-1] - 2*A[-1,-1]
+
+@numba.jit(nopython=True, cache=True)
 def hill(a, n, k):
     h_ma = 1 - (1 / (1 + (a/k)**n))
     return h_ma
@@ -53,11 +68,14 @@ def hillN(a, n, k):
 @numba.jit(nopython=True, cache=True)
 def calc_diffusion(y, diff_terms, p0):
     dx, Dc,  rc, rp,    Kn,  Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = p0
-    laplace_op_noflux_boundaries(y, diff_terms)
-    diff_terms[cp_i,:,:] *= Dc*dx
-    diff_terms[cs_i,:,:] *= Dc*dx
-    diff_terms[n_i,:,:] *= Dn*dx
-    diff_terms[a_i,:,:] *= Da*dx
+    laplace_op_noflux_boundaries_onespec(Dc*dx*np.power(y[cs_i,:,:],2), diff_terms[cs_i,:,:])
+    laplace_op_noflux_boundaries_onespec(Dc*dx*np.power(y[cp_i,:,:],2), diff_terms[cp_i,:,:])
+    laplace_op_noflux_boundaries_onespec(Dn*dx*y[n_i,:,:], diff_terms[n_i,:,:])
+    laplace_op_noflux_boundaries_onespec(Da*dx*y[a_i,:,:], diff_terms[a_i,:,:])
+#    diff_terms[cp_i,:,:] *= Dc*dx
+#    diff_terms[cs_i,:,:] *= Dc*dx
+#    diff_terms[n_i,:,:] *= Dn*dx
+#    diff_terms[a_i,:,:] *= Da*dx
     diff_terms[s_i,:,:] = 0
     diff_terms[r_i,:,:] = 0
 
@@ -79,7 +97,7 @@ def calc_rxn(y, d_y, nut_avail, p0):
     d_y[a_i,:,:] =  xa * y[s_i,:,:]*(y[cp_i,:,:]+y[cs_i,:,:]) - pa * y[a_i,:,:]
 
     # Synthase production
-    d_y[s_i,:,:] = ( xs * np.greater(y[cp_i,:,:],od) * hill(y[a_i,:,:], hS, kS) * hillN(y[r_i,:,:], hC, kC) + xS * np.greater(y[cs_i,:,:],od) - rc * y[s_i,:,:]) * nut_avail - rp * y[s_i,:,:]
+    d_y[s_i,:,:] = ( xs * np.greater(y[cp_i,:,:],od) * hill(y[a_i,:,:], hS, kS) * hillN(y[r_i,:,:], hC, kC) + xS * np.greater(y[cs_i,:,:],od) - rc * y[s_i,:,:]* np.greater(y[cp_i,:,:]+y[cs_i,:,:],od)) * nut_avail - rp * y[s_i,:,:]
 
     # Repressor production
     d_y[r_i,:,:] = ( xr  * hill(y[a_i,:,:], hR, kR) - rc * y[r_i,:,:]) * nut_avail * np.greater(y[cp_i,:,:],od) - rp * y[r_i,:,:]
@@ -114,34 +132,35 @@ class Jacobian(object):
         # jacobian terms:
         # diffusion : 5 per x,y point, minus
         n_nz = n_jac*5 - 2*(n_h+n_w)*species # + 4*n_h*n_w
-        self.dif_vec = np.empty(n_nz,dtype=np.float64)
-        self.j1_dif = np.empty(n_nz,dtype=np.int)
-        self.j2_dif = np.empty(n_nz,dtype=np.int)
+        self.dif_vec = np.zeros(n_nz,dtype=np.float64)
+        self.j1_dif = np.zeros(n_nz,dtype=np.int)
+        self.j2_dif = np.zeros(n_nz,dtype=np.int)
 
         offsets = ((0,1), (1,0), (0,-1), (-1,0))
-        neigh_diff_indices = [[(self.f_ji(x,y,spec), self.f_ji(x+offx,y+offy,spec))
+        neigh_diff_indices = [(self.f_ji(x,y,spec), self.f_ji(x+offx,y+offy,spec))
                                    for offy, offx in offsets
                                     for x in np.arange(max([0,-offx]), n_w+min([0,-offx]))
-                                     for y in np.arange(max([0,-offy]), n_h+min([0,-offy]))]
+                                     for y in np.arange(max([0,-offy]), n_h+min([0,-offy]))
                                           for spec in np.arange(species)]
 
-        center_diff_indices = [[(self.f_ji(x,y,spec), self.f_ji(x,y,spec))
+        center_diff_indices = [(self.f_ji(x,y,spec), self.f_ji(x,y,spec))
                                 for x in np.arange(1,n_w-1)
-                                 for y in np.arange(1,n_h-1)]
+                                 for y in np.arange(1,n_h-1)
                                    for spec in np.arange(species)]
 
 
-        edge_diff_indices = [[(self.f_ji(x,y,spec), self.f_ji(x,y,spec))
-                                for x in np.arange(1,n_w-1)
-                                 for y in [0, n_h-1]] +
-                              [(self.f_ji(x,y,spec), self.f_ji(x,y,spec))
-                                for x in [0,n_w-1]
-                                 for y in np.arange(1,n_h-1)]
+        x_ranges = (np.arange(1,n_w-1), [0,n_w-1])
+        y_ranges = ([0,n_h-1],np.arange(1,n_h-1))
+        zipped_ranges = zip(x_ranges, y_ranges)
+        edge_diff_indices = [(self.f_ji(x,y,spec), self.f_ji(x,y,spec))
+                                  for x_range, y_range in zipped_ranges
+                                for x in x_range
+                                 for y in y_range
                                    for spec in np.arange(species)]
 
-        corner_diff_indices = [[(self.f_ji(x,y,spec), self.f_ji(x,y,spec))
+        corner_diff_indices = [(self.f_ji(x,y,spec), self.f_ji(x,y,spec))
                                                     for x in [0,n_w-1]
-                                                     for y in [0,n_h-1]]
+                                                     for y in [0,n_h-1]
                                                        for spec in np.arange(species)]
 
         self.dif_indices_list = [neigh_diff_indices, center_diff_indices, edge_diff_indices, corner_diff_indices]
@@ -165,32 +184,7 @@ class Jacobian(object):
             for u in u_vec:
                 self.rxn_indices_dict[(v,u)] = rxn_index_helper(v,u)
 
-#        # cp nonzero partials: n, cp
-#        v = cp_i
-#        u_vec = [n_i, cp_i]
-#        for u in u_vec:
-#            self.rxn_indices_dict[(v,u)] = rxn_index_helper(v,u)
-#
-#        # n_i nonzero partials: cs, cp
-#        v = n_i
-#        u_vec = [cs_i, cp_i]
-#        for u in u_vec:
-#            self.rxn_indices_dict[(v,u)] = rxn_index_helper(v,u)
-#        n_terms = np.sum([len(xx) for xx in self.rxn_indices_dict.values()])
-#         #dc/(dcdt)
-#         dcdcdt_indices = [(x, y, self.f_ji(x,y,c_i), self.f_ji(x,y,c_i)) for x in np.arange(n_w) for y in np.arange(n_h)]
-
-#         #dc/(dndt)
-#         dcdndt_indices = [(x, y, self.f_ji(x,y,c_i), self.f_ji(x,y,n_i)) for x in np.arange(n_w) for y in np.arange(n_h)]
-
-#         #dn/(dndt)
-#         dndndt_indices = [(x, y, self.f_ji(x,y,n_i), self.f_ji(x,y,n_i)) for x in np.arange(n_w) for y in np.arange(n_h)]
-
-#         #dn/(dcdt)
-#         dndcdt_indices = [(x, y, self.f_ji(x,y,n_i), self.f_ji(x,y,c_i)) for x in np.arange(n_w) for y in np.arange(n_h)]
-
-#         self.rxn_indices_list = [dcdcdt_indices, dcdndt_indices, dndndt_indices, dndcdt_indices]
-        n_terms = np.sum([len(xx) for xx in self.rxn_indices_list])
+        n_terms = np.sum([len(xx) for xx in self.rxn_indices_dict.values()])
         self.rxn_vec = np.zeros(n_terms, dtype=np.float64)
         self.j1_rxn = np.zeros(n_terms, dtype=np.int)
         self.j2_rxn = np.zeros(n_terms, dtype=np.int)
@@ -199,7 +193,7 @@ class Jacobian(object):
         self.p0 = p0
         Dc,  rc, rp,    Kn,  Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = p0
         self.D_vec = [Dc, Dc, Dn, Da, Dc, Dc]
-        self.calc_dif_jac()
+        self.m_vec = [2, 2, 1, 1, 0, 0]
 
     def assign_rxn_vals(self, indices, val_arr, i):
         x1,y1,j1,j2 = np.array(indices).T
@@ -212,42 +206,34 @@ class Jacobian(object):
 
     def assign_dif_vals(self, val, ind_list, i):
         n_inds = len(ind_list)
-        update_slice = slice(i,i+n_inds)
-        self.dif_vec[update_slice] = val
         ij_arr = np.array(ind_list)
+        update_slice = slice(i,i+n_inds)
         self.j1_dif[update_slice] = ij_arr[:,0]
         self.j2_dif[update_slice] = ij_arr[:,1]
+        self.dif_vec[update_slice] = val[ij_arr[:,0]]
         return i + n_inds
 
-    def calc_dif_jac(self):
-        Dc,  rc, rp,    Kn,  Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = self.p0
+    def calc_dif_jac(self, t, y):
         D_vec = np.array(self.D_vec)
-        dx = self.dx
-        species, n_h, n_w, dx = self.dims
-        cs_i, cp_i, n_i, a_i, s_i, r_i = np.arange(species)
+        m_vec = np.array(self.m_vec)
+        species, nh, nw, dx = self.dims
+        y.shape = (species, nh, nw)
+        val_arr = np.zeros_like(y)
+        for D_val, m, spec_ind in zip(D_vec, m_vec, np.arange(species)):
+            if m < 1:
+                val_arr[spec_ind,:,:] = 0
+            elif m > 1:
+                val_arr[spec_ind,:,:] = dx*D_val*m*np.power(y[spec_ind,:,:], (m-1))
+            else:
+                val_arr[spec_ind,:,:] = dx*D_val
         i = 0
-        neigh_diff_indices, center_diff_indices, edge_diff_indices, corner_diff_indices = self.dif_indices_list
-        val_arr = D_vec*dx
-        for val, ind_list in zip(val_arr, neigh_diff_indices):
-            i = self.assign_dif_vals(val, ind_list, i)
-
-        val_arr = D_vec*(-4*dx)
-        for val, ind_list in zip(val_arr, center_diff_indices):
-            i = self.assign_dif_vals(val, ind_list, i)
-
-        val_arr = D_vec*(-3*dx)
-        for val, ind_list in zip(val_arr, edge_diff_indices):
-            i = self.assign_dif_vals(val, ind_list, i)
-
-        val_arr = D_vec*(-2*dx)
-        for val, ind_list in zip(val_arr, corner_diff_indices):
-            i = self.assign_dif_vals(val, ind_list, i)
+        ind_list_coeffs = [1, -4, -3, -2]
+        for pos_indices, coeff in zip(self.dif_indices_list, ind_list_coeffs):
+            i = self.assign_dif_vals(val_arr.flatten()*coeff, pos_indices, i)
 
     def calc_rxn_jac(self, t, y):
         Dc,  rc, rp,    Kn,  Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = self.p0
 #         dcdcdt_indices, dcdndt_indices, dndndt_indices, dndcdt_indices = self.rxn_indices_list
-        cs_i, cp_i, n_i, a_i, s_i, r_i = np.arange(species)
-
         i = 0
         nut_avail = hill(y[n_i,:,:], 2.5, Kn)
         dnut_avail = dhillda(y[n_i,:,:], 2.5, Kn)
@@ -255,20 +241,20 @@ class Jacobian(object):
 
         #dc/(dcdt)
         v, u = cs_i, cs_i
-        val_arr = rc*nut_avail*np.greater(y[cs_i,:,:],od)
+        val_arr = rc*nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         v, u = cp_i, cp_i
-        val_arr = rc*nut_avail*np.greater(y[cp_i,:,:],od)
+        val_arr = rc*nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #dc/(dndt)
         v, u = cs_i, n_i
-        val_arr = rc*dnut_avail*y[cs_i,:,:]*np.greater(y[cs_i,:,:],od)
+        val_arr = rc*dnut_avail*y[cs_i,:,:]
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         v, u = cp_i, n_i
-        val_arr = rc*dnut_avail*y[cp_i,:,:]*np.greater(y[cp_i,:,:],od)
+        val_arr = rc*dnut_avail*y[cp_i,:,:]
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #dn/(dcdt)
@@ -279,7 +265,7 @@ class Jacobian(object):
         v, u = n_i, cs_i
         val_arr = -kn*nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-        
+
         #dn/(dndt)
         v, u = n_i, n_i
         val_arr = -kn*dnut_avail*(y[cp_i,:,:]+y[cs_i,:,:])
@@ -317,7 +303,7 @@ class Jacobian(object):
         #ds/(dndt)
         v, u = s_i, n_i
         val_arr = (xs * np.greater(y[cp_i,:,:],od) * hill(y[a_i,:,:], hR, kR) * hillN(y[r_i,:,:], hC,
-            kC) + xS*np.greater(y[cs_i,:,:],od)- rc * y[s_i,:,:]) * dnut_avail
+            kC) + xS*np.greater(y[cs_i,:,:],od)- rc * y[s_i,:,:] * np.greater(y[cp_i,:,:]+y[cs_i,:,:],od)) * dnut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #ds/(dadt)
@@ -327,7 +313,7 @@ class Jacobian(object):
 
         #ds/(dsdt)
         v, u = s_i, s_i
-        val_arr =  -rc * nut_avail - rp
+        val_arr =  -rc * nut_avail * np.greater(y[cp_i,:,:]+y[cs_i,:,:],od) - rp
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #ds/(drdt)
@@ -342,7 +328,7 @@ class Jacobian(object):
 
         #dr/(dadt)
         v, u = r_i, a_i
-        val_arr = xr * y[cp_i,:,:]* dhillda(y[a_i,:,:], hR, kR) * nut_avail
+        val_arr = xr * y[cp_i,:,:]* dhillda(y[a_i,:,:], hR, kR) * nut_avail * np.greater(y[cp_i,:,:],od)
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #dr/(drdt)
@@ -352,7 +338,7 @@ class Jacobian(object):
 
         #dr/(dndt)
         v, u = r_i, n_i
-        val_arr = (xr * np.greater(y[cp_i,:,:],od) * hill(y[a_i,:,:], hR, kR) - rc * y[r_i,:,:]) * dnut_avail
+        val_arr = (xr * hill(y[a_i,:,:], hR, kR) - rc * y[r_i,:,:]) * dnut_avail * np.greater(y[cp_i,:,:],od)
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
     def calc_jac_wrapper(self, t, y):
@@ -374,9 +360,12 @@ class Jacobian(object):
         y.shape = species*n_h*n_w
         return sparse.coo_matrix((self.rxn_vec, (self.j1_rxn,self.j2_rxn)),shape=(n_jac, n_jac),dtype=np.float64)
 
-    def get_dif_jac(self):
+    def get_dif_jac(self, t, y):
         species, n_h, n_w, dx = self.dims
+        # y.shape = (species,n_h,n_w)
         n_jac = species*n_h*n_w
+        self.calc_dif_jac(t,y)
+        # y.shape = species*n_h*n_w
         return sparse.coo_matrix((self.dif_vec, (self.j1_dif,self.j2_dif)),shape=(n_jac, n_jac),dtype=np.float64)
 
 class Simulator(object):
@@ -402,10 +391,10 @@ class Simulator(object):
         atol = np.zeros((species, nh, nw), dtype=np.float64,order='C')# + 1e-7
         atol[cs_i,:,:] = 1e-3*np.ones((nh, nw), dtype=np.float64)
         atol[cp_i,:,:] = 1e-3*np.ones((nh, nw), dtype=np.float64)
-        atol[n_i,:,:]  = 1e-2*np.ones((nh, nw), dtype=np.float64)
-        atol[a_i,:,:]  = 1e-2*np.ones((nh, nw), dtype=np.float64)
-        atol[s_i,:,:]  = 1e-2*np.ones((nh, nw), dtype=np.float64)
-        atol[r_i,:,:]  = 1e-2*np.ones((nh, nw), dtype=np.float64)
+        atol[n_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
+        atol[a_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
+        atol[s_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
+        atol[r_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
         self.atol = atol
         self.atol.shape = species*nh*nw
         self.rtol = np.float64(1e-4)
