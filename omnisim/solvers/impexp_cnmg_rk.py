@@ -11,7 +11,7 @@ from .common import (validate_max_step, validate_tol, select_initial_step,
 from .base import OdeSolver, DenseOutput
 from . import dop853_coefficients
 from .rk import RK45
-from .. import split_omnisim as oms
+from .. import nodc_3d_omnisim as oms
 
 def gauss_seidel(A, b, x, n_iter=np.inf, conv_eps=1e-4, w=0.5):
     # Check sparsity
@@ -54,17 +54,18 @@ class cn_mg():
         basedims = simmer.basedims
         simdims = simmer.dims
         species = simdims[0]
-        n_levels = np.int(np.log2(simmer.scale))+1
-        level_jacobian = list(range(n_levels))
-        level_shape = list(range(n_levels))
+        self.n_levels = n_levels = np.int(np.log2(simmer.scale))
+        self.level_jacobian = level_jacobian = list(range(n_levels))
+        self.level_shape = level_shape = list(range(n_levels))
         scale = simmer.scale
         for i in np.arange(n_levels):
-            nh, nw = basedims*np.power(2,n_levels-1-i)
-            dx = np.power(scale/2.25,2)
-            dims = (species, nh, nw, dx)
+            nz, nh, nw = basedims*np.power(2,n_levels-i)
+            arr_z = nz+5
+            dx = np.power(np.power(2,n_levels-1-i),2)
+            dims = (species, nz, nh, nw, dx)
             level_jacobian[i] = oms.Jacobian(dims)
             level_jacobian[i].set_p0(simmer.p0)
-            level_shape[i] = (species, nh, nw)
+            level_shape[i] = (arr_z, nh, nw)
         self.level_jacobian = level_jacobian
         self.level_shape = level_shape
         self.n_levels = n_levels
@@ -77,7 +78,7 @@ class cn_mg():
 
     def cn_rhsb_wrxn(self, y):
         dt = self.dt
-        difmat = self.level_jacobian[0].get_dif_jac()
+        difmat = self.level_jacobian[0].get_dif_jac(0,y)
         rxnmat = self.level_jacobian[0].get_rxn_jac(0,y)
         f_rxn = self.simmer.f_rxn_wrapper(0,y)
         return y + (dt/2)*(difmat.dot(y) + (1/2)*(dt*rxnmat.dot(y) + 2*f_rxn))
@@ -195,6 +196,7 @@ class CNMGRK(OdeSolver):
     def __init__(self, simmer, t0, t_bound, max_step=np.inf,
                  vectorized=False, first_step=None, **extraneous):
         self.simmer = simmer
+        self.dims = simmer.dims
         warn_extraneous(extraneous)
         rxn_fun = simmer.f_rxn_wrapper
         y0 = simmer.initial_array.flatten()
@@ -204,8 +206,8 @@ class CNMGRK(OdeSolver):
         super(CNMGRK, self).__init__(rxn_fun, t0, y0, t_bound, vectorized,
                                          support_complex=True)
         atol, rtol = self.simmer.atol, self.simmer.rtol
-    #    self.rk_solver = RK45(rxn_fun, t0, y0, t_bound, max_step,
-    #             rtol, atol, vectorized, first_step, **extraneous)
+        #self.rk_solver = RK45(rxn_fun, t0, y0, t_bound, max_step,
+        #         rtol, atol, vectorized, first_step, **extraneous)
         self.cnmg_solver = cn_mg(simmer, self.dt)
 
     #def _step_impl(self):
@@ -228,13 +230,24 @@ class CNMGRK(OdeSolver):
     #        raise Exception
 
     def _step_impl(self):
+        # shorten variables
         t, dt, y = self.t, self.dt, self.y
-        y_new = y + dt*self.simmer.f_rxn_wrapper(t, y)
+        d_y, diff_terms = self.simmer.d_y, self.simmer.diff_terms
+        species, nz, nh, nw, dx = self.dims
+        z0_slice = self.simmer.z0_slice
+        # perform step
+        y.shape = self.simmer.yshape
+        y_new = y.copy()
+        _ = self.simmer.f_rxn_wrapper(t, y)
+        y.shape = self.simmer.yshape
+        y_new.shape = self.simmer.yshape
+        y_new[z0_slice] = y[z0_slice] + dt*d_y
+        y_new.shape = np.prod(self.simmer.yshape)
         A = self.cnmg_solver.cn_lhsA(0)
         b = self.cnmg_solver.cn_rhsb(y_new,0)
         # self.cnmg_solver.f_cycle(y, b, 0, n_iter=4)
         y_new, info = gmres(A,b,y_new)
         if info != 0:
-            print('gmres failed {}'.format(info))
-            raise Exception
+            return False, 'gmres failed {}'.format(info)
         self.y = y_new
+        return True, None

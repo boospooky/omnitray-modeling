@@ -341,7 +341,7 @@ class Jacobian(object):
 
         #dr/(drdt)
         v, u = r_i, r_i
-        val_arr = -rc * nut_avail - rR
+        val_arr = -rc * nut_avail - rp
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #dr/(dndt)

@@ -8,3 +8,4 @@ from .bdf import BDF
 #from .lsoda import LSODA
 from .common import OdeSolution
 from .base import DenseOutput, OdeSolver
+from .impexp_cnmg_rk import CNMGRK
