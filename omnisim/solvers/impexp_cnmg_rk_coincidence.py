@@ -233,13 +233,13 @@ class CNMGRK(OdeSolver):
         t, dt, y = self.t, self.dt, self.y
         ns, nh, nw = self.ns, self.nh, self.nw
         f_vec = self.simmer.f_ivp_wrapper(t, y)
-        jac_arr = self.simmer.jacobian.calc_jac_wrapper(0,y)
+        jac_arr = self.simmer.jacobian.get_dif_jac(0,y)
         imat = eye(ns*nw*nh, dtype=np.float64)
         dy_vec = dt * f_vec
         A = imat - (dt/2)*jac_arr
         b = A.dot(y) + dy_vec
         # self.cnmg_solver.f_cycle(y, b, 0, n_iter=4)
-        y_new, info = gmres(A,b,y+dy_vec,tol=1e-3,atol=1e-3)
+        y_new, info = gmres(A,b,y+dy_vec,tol=1e-3,atol=1e-3,maxiter=100000)
         if info != 0:
             print('gmres failed {}'.format(info))
             raise Exception

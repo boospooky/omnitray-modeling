@@ -507,7 +507,7 @@ class Simulator(object):
     Instances of this class are initialized with information requried to simulate an experimental pad and compare to data.
     '''
     def __init__(self, scale=8):
-        self.basedims = np.array([2,8,24])
+        self.basedims = np.array([2,4,12])
         self.set_scale(scale)
         self.t_eval = np.linspace(0,24*60,200)
 

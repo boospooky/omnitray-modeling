@@ -68,14 +68,10 @@ def hillN(a, n, k):
 @numba.jit('void(float64[:,:,:],float64[:,:,:],float64[:])',nopython=True, cache=True)
 def calc_diffusion(y, diff_terms, p0):
     dx, Dc,  rc, rS, rR,    Hn, Kn, Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = p0
-#    laplace_op_noflux_boundaries_onespec(Dc*dx*np.power(y[cs_i,:,:],2), diff_terms[cs_i,:,:])
-#    laplace_op_noflux_boundaries_onespec(Dc*dx*np.power(y[cp_i,:,:],2), diff_terms[cp_i,:,:])
     laplace_op_noflux_boundaries_onespec(Dn*dx*y[n_i,:,:], diff_terms[n_i,:,:])
     laplace_op_noflux_boundaries_onespec(Da*dx*y[a_i,:,:], diff_terms[a_i,:,:])
     diff_terms[cp_i,:,:] = 0
     diff_terms[cs_i,:,:] = 0
-#    diff_terms[n_i,:,:] *= Dn*dx
-#    diff_terms[a_i,:,:] *= Da*dx
     diff_terms[s_i,:,:] = 0
     diff_terms[r_i,:,:] = 0
 
@@ -94,7 +90,7 @@ def calc_rxn(y, d_y, nut_avail, p0):
     d_y[n_i,:,:] =  -kn * nut_avail * (y[cp_i,:,:]+y[cs_i,:,:])
 
     # AHL production
-    d_y[a_i,:,:] =  xa * y[s_i,:,:]*(y[cp_i,:,:]+y[cs_i,:,:]) - pa * y[a_i,:,:]
+    d_y[a_i,:,:] =  dx*xa * y[s_i,:,:]*(y[cp_i,:,:]+y[cs_i,:,:]) - pa * y[a_i,:,:] - dx * Da * 0.2 * y[a_i,:,:]
 
     # Synthase production
     d_y[s_i,:,:] = ( xs * np.greater(y[cp_i,:,:],od) * hill(y[a_i,:,:], hS, kS) * hillN(y[r_i,:,:], hC, kC) + xS * np.greater(y[cs_i,:,:],od) - rc * y[s_i,:,:]) * nut_avail - rS * y[s_i,:,:]
@@ -241,6 +237,7 @@ class Jacobian(object):
         Dc,  rc, rS, rR,    Hn, Kn, Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = self.p0
 #         dcdcdt_indices, dcdndt_indices, dndndt_indices, dndcdt_indices = self.rxn_indices_list
         cs_i, cp_i, n_i, a_i, s_i, r_i = np.arange(species)
+        dx = self.dx
 
         i = 0
         nut_avail = hill(y[n_i,:,:], Hn, Kn)
@@ -267,46 +264,37 @@ class Jacobian(object):
 
         #dn/(dcdt)
         v, u = n_i, cp_i
-        val_arr = -kn*nut_avail
+        val_arr = -dx*kn*nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         v, u = n_i, cs_i
-        val_arr = -kn*nut_avail
+        val_arr = -dx*kn*nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-        
+
         #dn/(dndt)
         v, u = n_i, n_i
-        val_arr = -kn*dnut_avail*(y[cp_i,:,:]+y[cs_i,:,:])
+        val_arr = -dx*kn*dnut_avail*(y[cp_i,:,:]+y[cs_i,:,:])
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dsdt)
         v, u = a_i, s_i
-        val_arr = xa*y[cell_inds,:,:].sum(axis=0)
+        val_arr = dx*xa*y[cell_inds,:,:].sum(axis=0)
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dcsdt)
         v, u = a_i, cs_i
-        val_arr = xa*y[s_i,:,:]
+        val_arr = dx*xa*y[s_i,:,:]
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dcpdt)
         v, u = a_i, cp_i
-        val_arr = xa*y[s_i,:,:]
+        val_arr = dx*xa*y[s_i,:,:]
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dadt)
         v, u = a_i, a_i
-        val_arr = -pa*np.ones_like(nut_avail)
+        val_arr = -(pa + dx * Da * 0.2 )*np.ones_like(nut_avail)
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-
-        #ds/(dcpdt)
-        #v, u = s_i, cp_i
-        #val_arr = 0 * nut_avail# hill(y[a_i,:,:], hS, kS) * hillN(y[r_i,:,:], hC, kC) * nut_avail
-        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-        #
-        #v, u = s_i, cs_i
-        #val_arr = 0 * nut_avail
-        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #ds/(dndt)
         v, u = s_i, n_i
@@ -329,11 +317,6 @@ class Jacobian(object):
         val_arr = -xs * np.greater(y[cp_i,:,:],od) * hill(y[a_i,:,:], hS, kS) * dhillda(y[r_i,:,:], hC, kC) * nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
-        #dr/(dcpdt)
-        #v, u = r_i, cp_i
-        #val_arr = xr * hill(y[a_i,:,:], hR, kR) * nut_avail
-        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-
         #dr/(dadt)
         v, u = r_i, a_i
         val_arr = xr * y[cp_i,:,:]* dhillda(y[a_i,:,:], hR, kR) * nut_avail
@@ -341,7 +324,7 @@ class Jacobian(object):
 
         #dr/(drdt)
         v, u = r_i, r_i
-        val_arr = -rc * nut_avail - rp
+        val_arr = -rc * nut_avail - rR
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #dr/(dndt)
@@ -377,9 +360,9 @@ class Simulator(object):
     '''
     Instances of this class are initialized with information requried to simulate an experimental pad and compare to data.
     '''
-    def __init__(self):
-        self.basedims = np.array([4,10])
-        self.set_scale(32)
+    def __init__(self, scale=32):
+        self.basedims = np.array([4,4])
+        self.set_scale(scale)
         self.t_eval = np.linspace(0,24*60,200)
 
     def set_scale(self,scale):
@@ -388,7 +371,7 @@ class Simulator(object):
             print('rounding scale to nearest power of 2')
             scale = np.int(np.power(2,np.round(logscale)))
         self.scale = scale
-        self.dx = np.power(scale/2.25,2)
+        self.dx = np.power(scale,2)
         nh, nw = scale*self.basedims
         species = 6
         self.dims = [species,nh,nw,self.dx]

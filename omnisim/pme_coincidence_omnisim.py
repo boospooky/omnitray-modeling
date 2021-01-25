@@ -14,11 +14,11 @@ import numba
 import emcee
 
 from multiprocessing import Pool, Process, cpu_count
-species = 13
+species = 12
 col_thresh = 0.01
-cr_i, csa_i, csb_i, cpa_i, cpb_i, n_i, aa_i, ab_i, sa_i, sb_i, ra_i, rb_i, o_i  = np.arange(species)
+cr_i, csa_i, csb_i, cpa_i, cpb_i, n_i, aa_i, ab_i, sa_i, sb_i, ra_i, rb_i  = np.arange(species)
 cell_inds = (cr_i, csa_i, csb_i, cpa_i, cpb_i)
-protein_inds = (sa_i, sb_i, ra_i, rb_i, o_i)
+protein_inds = (sa_i, sb_i, ra_i, rb_i)
 ahl_inds = (aa_i, ab_i)
 syn_inds = (ra_i, rb_i)
 p0_keys='dx','Dc','rc','rS','rR','Hn','Kn','Dn','kn','Daa','Dab','xa','xsa','xsb','xS','xr','hS','kS','hR','kR','hC','kC','pa','leak','od'
@@ -92,6 +92,18 @@ def calc_diffusion(y, diff_terms, p0):
     laplace_op_noflux_boundaries_onespec(Daa*dx*y[aa_i,:,:], diff_terms[aa_i,:,:])
     laplace_op_noflux_boundaries_onespec(Dab*dx*y[ab_i,:,:], diff_terms[ab_i,:,:])
 
+@numba.jit('void(float64[:,:,:],float64[:,:,:],float64[:])',nopython=True, cache=True)
+def calc_xgrad(y, diff_terms, p0):
+    dx,Dc,rc,rS,rR,Hn,Kn,Dn,kn,Daa,Dab,xa,xs,xSa,xSb,xr,hS,kS,hR,kR,hC,kC,pa,leak,od=p0
+    for cell_ind in cell_inds+protein_inds:
+      grad_x_noflux_onespec(Dc*dx*y[cell_ind,:,:], diff_terms[cell_ind,:,:])
+
+@numba.jit('void(float64[:,:,:],float64[:,:,:],float64[:])',nopython=True, cache=True)
+def calc_ygrad(y, diff_terms, p0):
+    dx,Dc,rc,rS,rR,Hn,Kn,Dn,kn,Daa,Dab,xa,xs,xSa,xSb,xr,hS,kS,hR,kR,hC,kC,pa,leak,od=p0
+    for cell_ind in cell_inds+protein_inds:
+      grad_y_noflux_onespec(Dc*dx*y[cell_ind,:,:], diff_terms[cell_ind,:,:])
+
 @numba.jit('void(float64[:,:,:],float64[:,:,:],float64[:,:],float64[:])',cache=True,nopython=True)
 def calc_rxn(y, d_y, nut_avail, p0):
     dx,Dc,rc,rS,rR,Hn,Kn,Dn,kn,Daa,Dab,xa,xs,xSa,xSb,xr,hS,kS,hR,kR,hC,kC,pa,leak,od=p0
@@ -119,13 +131,19 @@ def calc_rxn(y, d_y, nut_avail, p0):
     d_y[rb_i,:,:] = ( xr  * hill(y[ab_i,:,:], hR, kR) - rc * y[rb_i,:,:]) * nut_avail * np.greater(y[cpb_i,:,:],od) - rR * y[rb_i,:,:]
 
     # output production
-    d_y[o_i,:,:] = ( xr  * hill(y[aa_i,:,:], hR, kR) * hill(y[ab_i,:,:], hR, kR) - rc * y[o_i,:,:]) * nut_avail * np.greater(y[cr_i,:,:],od) - rR * y[o_i,:,:]
+    # d_y[o_i,:,:] = ( xr  * hill(y[aa_i,:,:], hR, kR) * hill(y[ab_i,:,:], hR, kR) - rc * y[o_i,:,:]) * nut_avail * np.greater(y[cr_i,:,:],od) - rR * y[o_i,:,:]
 
 @numba.jit('void(float64[:,:,:],float64[:,:,:],float64[:,:,:],float64[:,:],float64[:])',cache=True,nopython=True)
 def calc_f(y, d_y, diff_terms, nut_avail, p0):
     calc_diffusion(y, diff_terms, p0)
     calc_rxn(y, d_y, nut_avail, p0)
     d_y[:] = d_y + diff_terms
+    # squred x grad
+#    diff_terms[:]=0
+#    calc_xgrad(y, diff_terms, p0)
+#    d_y[:] = d_y + np.power(diff_terms,2)
+#    calc_ygrad(y, diff_terms, p0)
+#    d_y[:] = d_y + np.power(diff_terms,2)
 
 def f_ivp(t, y, d_y, diff_terms, nut_avail, p0, dims, calc_f):
     y.shape = dims
@@ -204,8 +222,8 @@ class Jacobian(object):
                      [sa_i, n_i, aa_i, ra_i],# sa_i
                      [sb_i, n_i, ab_i, rb_i],# sb_i
                      [aa_i, ra_i, n_i],# ra_i
-                     [ab_i, rb_i, n_i],# rb_i
-                     [aa_i, ab_i, o_i, n_i]]# o_i
+                     [ab_i, rb_i, n_i]]# rb_i
+                     #[aa_i, ab_i, o_i, n_i]]# o_i
         for v, u_vec in zip(v_vec, u_vec_list):
             for u in u_vec:
                 self.rxn_indices_dict[(v,u)] = rxn_index_helper(v,u)
@@ -343,24 +361,24 @@ class Jacobian(object):
           i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #do/(daadt)
-        v, u = o_i, aa_i
-        val_arr = xr * y[cr_i,:,:]* dhillda(y[aa_i,:,:], hR, kR) * hill(y[ab_i,:,:], hR, kR) * nut_avail * np.greater(y[cr_i,:,:],od)
-        i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-
-        #do/(dabdt)
-        v, u = o_i, ab_i
-        val_arr = xr * y[cr_i,:,:]* dhillda(y[ab_i,:,:], hR, kR) * hill(y[aa_i,:,:], hR, kR) * nut_avail * np.greater(y[cr_i,:,:],od)
-        i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-
-        #do/(dodt)
-        v, u = o_i, o_i
-        val_arr = -rc * nut_avail - rR
-        i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-
-        #do/(dndt)
-        v, u = o_i, n_i
-        val_arr = (xr * hill(y[aa_i,:,:], hR, kR) * hill(y[ab_i,:,:], hR, kR)  - rc * y[o_i,:,:]) * dnut_avail * np.greater(y[cr_i,:,:],od)
-        i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
+#        v, u = o_i, aa_i
+#        val_arr = xr * y[cr_i,:,:]* dhillda(y[aa_i,:,:], hR, kR) * hill(y[ab_i,:,:], hR, kR) * nut_avail * np.greater(y[cr_i,:,:],od)
+#        i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
+#
+#        #do/(dabdt)
+#        v, u = o_i, ab_i
+#        val_arr = xr * y[cr_i,:,:]* dhillda(y[ab_i,:,:], hR, kR) * hill(y[aa_i,:,:], hR, kR) * nut_avail * np.greater(y[cr_i,:,:],od)
+#        i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
+#
+#        #do/(dodt)
+#        v, u = o_i, o_i
+#        val_arr = -rc * nut_avail - rR
+#        i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
+#
+#        #do/(dndt)
+#        v, u = o_i, n_i
+#        val_arr = (xr * hill(y[aa_i,:,:], hR, kR) * hill(y[ab_i,:,:], hR, kR)  - rc * y[o_i,:,:]) * dnut_avail * np.greater(y[cr_i,:,:],od)
+#        i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
     def calc_jac_wrapper(self, t, y):
         species, n_h, n_w, dx = self.dims
@@ -405,7 +423,8 @@ class Simulator(object):
             theta = np.random.uniform(0,2*np.pi,size=(1,))
             x = np.int(nw/2 + np.cos(theta)*rad)
             y = np.int(nh/2 + np.sin(theta)*rad)
-            self.initial_array[c_i,y,x] = 1
+            self.initial_array[c_i,y,x] = scale*1e-3
+        self.initial_array = skimage.filters.gaussian(self.initial_array,(0,scale*1e-2,scale*1e-2),preserve_range=True)
 
     def set_scale(self,scale):
         logscale = np.log2(scale)
@@ -420,7 +439,7 @@ class Simulator(object):
         atol = np.zeros((species, nh, nw), dtype=np.float64,order='C')# + 1e-7
         atol[n_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
         atol[cr_i,:,:] = 1e-3*np.ones((nh, nw), dtype=np.float64)
-        atol[o_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
+        #atol[o_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
         atol[csa_i,:,:] = 1e-3*np.ones((nh, nw), dtype=np.float64)
         atol[cpa_i,:,:] = 1e-3*np.ones((nh, nw), dtype=np.float64)
         atol[aa_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
