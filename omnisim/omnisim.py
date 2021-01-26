@@ -22,8 +22,6 @@ cell_inds = (cs_i, cp_i)
 ahl_inds = [a_i]
 syn_inds = [r_i]
 
-
-
 @numba.jit(nopython=True, cache=True)
 def calc_diffusion(A, D):
     # Middle
@@ -57,20 +55,21 @@ def hillN(a, n, k):
 def calc_f(y, d_y, diff_terms, nut_avail, p0):
     dx, Dc,  rc, rp,    Kn,  Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = p0
     calc_diffusion(y, diff_terms)
+    scale = np.sqrt(dx)
 
     # Growth term
     nut_avail[:] = hill(y[n_i,:,:], 2.5, Kn)
 
     # Cell growth and diffusion
     for ind in cell_inds:
-#         d_y[ind,:,:] = (dx)*Dc*diff_terms[ind,:,:] + rc * nut_avail * y[ind,:,:]
-        d_y[ind,:,:] = rc * nut_avail * y[ind,:,:]
+        d_y[ind,:,:] = (dx)*Dc*diff_terms[ind,:,:] + rc * nut_avail * y[ind,:,:]
+        #d_y[ind,:,:] = rc * nut_avail * y[ind,:,:]
 
     # Nutrient consumption
-    d_y[n_i,:,:] = (dx)*Dn*diff_terms[n_i,:,:] - kn * nut_avail * (y[cp_i,:,:]+y[cs_i,:,:])
+    d_y[n_i,:,:] = (dx)*Dn*diff_terms[n_i,:,:] - scale*kn * nut_avail * (y[cp_i,:,:]+y[cs_i,:,:])
 
     # AHL production
-    d_y[a_i,:,:] = (dx)*Da*diff_terms[a_i,:,:] + xa * y[s_i,:,:]*(y[cp_i,:,:]+y[cs_i,:,:]) - pa * y[a_i,:,:]
+    d_y[a_i,:,:] = (dx)*Da*diff_terms[a_i,:,:] + scale * xa * y[s_i,:,:]*(y[cp_i,:,:]+y[cs_i,:,:]) - pa * y[a_i,:,:]
 
     # Synthase production
     d_y[s_i,:,:] = ( xs * np.greater(y[cp_i,:,:],col_thresh) * hill(y[a_i,:,:], hS, kS) * hillN(y[r_i,:,:], hC, kC) + xS * np.greater(y[cs_i,:,:],col_thresh) - rc * y[s_i,:,:]) * nut_avail - rp * y[s_i,:,:]
@@ -236,7 +235,7 @@ class Jacobian(object):
         Dc,  rc, rp,    Kn,  Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = self.p0
 #         dcdcdt_indices, dcdndt_indices, dndndt_indices, dndcdt_indices = self.rxn_indices_list
         cs_i, cp_i, n_i, a_i, s_i, r_i = np.arange(species)
-
+        scale = np.sqrt(self.dx)
         i = 0
         nut_avail = hill(y[n_i,:,:], 2.5, Kn)
         dnut_avail = dhillda(y[n_i,:,:], 2.5, Kn)
@@ -262,46 +261,37 @@ class Jacobian(object):
 
         #dn/(dcdt)
         v, u = n_i, cp_i
-        val_arr = -kn*nut_avail
+        val_arr = -scale*kn*nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         v, u = n_i, cs_i
-        val_arr = -kn*nut_avail
+        val_arr = -scale*kn*nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
         
         #dn/(dndt)
         v, u = n_i, n_i
-        val_arr = -kn*dnut_avail*(y[cp_i,:,:]+y[cs_i,:,:])
+        val_arr = -scale*kn*dnut_avail*(y[cp_i,:,:]+y[cs_i,:,:])
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dsdt)
         v, u = a_i, s_i
-        val_arr = xa*y[cell_inds,:,:].sum(axis=0)
+        val_arr = scale*xa*y[cell_inds,:,:].sum(axis=0)
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dcsdt)
         v, u = a_i, cs_i
-        val_arr = xa*y[s_i,:,:]
+        val_arr = scale*xa*y[s_i,:,:]
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dcpdt)
         v, u = a_i, cp_i
-        val_arr = xa*y[s_i,:,:]
+        val_arr = scale*xa*y[s_i,:,:]
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dadt)
         v, u = a_i, a_i
         val_arr = -pa*np.ones_like(nut_avail)
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-
-        #ds/(dcpdt)
-        #v, u = s_i, cp_i
-        #val_arr = 0 * nut_avail# hill(y[a_i,:,:], hS, kS) * hillN(y[r_i,:,:], hC, kC) * nut_avail
-        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-        #
-        #v, u = s_i, cs_i
-        #val_arr = 0 * nut_avail
-        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #ds/(dndt)
         v, u = s_i, n_i
@@ -323,11 +313,6 @@ class Jacobian(object):
         v, u = s_i, r_i
         val_arr = -xs * np.greater(y[cp_i,:,:],col_thresh) * hill(y[a_i,:,:], hS, kS) * dhillda(y[r_i,:,:], hC, kC) * nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-
-        #dr/(dcpdt)
-        #v, u = r_i, cp_i
-        #val_arr = xr * hill(y[a_i,:,:], hR, kR) * nut_avail
-        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #dr/(dadt)
         v, u = r_i, a_i

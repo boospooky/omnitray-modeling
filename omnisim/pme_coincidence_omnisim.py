@@ -86,8 +86,8 @@ def hillN(a, n, k):
 @numba.jit('void(float64[:,:,:],float64[:,:,:],float64[:])',nopython=True, cache=True)
 def calc_diffusion(y, diff_terms, p0):
     dx,Dc,rc,rS,rR,Hn,Kn,Dn,kn,Daa,Dab,xa,xs,xSa,xSb,xr,hS,kS,hR,kR,hC,kC,pa,leak,od=p0
-    for cell_ind in cell_inds+protein_inds:
-      laplace_op_noflux_boundaries_onespec(Dc*dx*np.power(y[cell_ind,:,:],2), diff_terms[cell_ind,:,:])
+    for c_i in cell_inds+protein_inds:
+      laplace_op_noflux_boundaries_onespec(Dc*dx*y[c_i,:,:], diff_terms[c_i,:,:])
     laplace_op_noflux_boundaries_onespec(Dn*dx*y[n_i,:,:], diff_terms[n_i,:,:])
     laplace_op_noflux_boundaries_onespec(Daa*dx*y[aa_i,:,:], diff_terms[aa_i,:,:])
     laplace_op_noflux_boundaries_onespec(Dab*dx*y[ab_i,:,:], diff_terms[ab_i,:,:])
@@ -236,7 +236,7 @@ class Jacobian(object):
         self.p0 = p0
         Dc,rc,rS,rR,Hn,Kn,Dn,kn,Daa,Dab,xa,xs,xSa,xSb,xr,hS,kS,hR,kR,hC,kC,pa,leak,od=p0
         self.D_vec = [Dc, Dc, Dc, Dc, Dc, Dn, Daa, Dab, Dc, Dc, Dc, Dc, Dc]
-        self.m_vec = [2, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2]
+        self.m_vec = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
 
     def assign_rxn_vals(self, indices, val_arr, i):
         x1,y1,j1,j2 = np.array(indices).T

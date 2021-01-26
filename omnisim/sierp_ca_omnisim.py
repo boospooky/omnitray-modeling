@@ -14,12 +14,17 @@ import numba
 import emcee
 
 from multiprocessing import Pool, Process, cpu_count
-species = 6
-col_thresh = 0.01
-cs_i, cp_i, n_i, a_i, s_i, r_i = np.arange(species)
-cell_inds = (cs_i, cp_i)
-ahl_inds = (a_i)
-syn_inds = (r_i)
+# Universal constants
+species = 13
+# 384 well plate inter-well distance : 2.25mm
+# scale is simulation positions per 2.25mm
+scale = 12 
+
+cl_i, cc_i, cr_i, n_i, al_i, ac_i, ar_i, sl_i, sc_i, sr_i, rl_i, rc_i, rr_i = np.arange(species)
+cell_inds = [cl_i, cc_i, cr_i]
+ahl_inds = [al_i, ac_i, ar_i]
+syn_inds = [sl_i, sc_i, sr_i]
+rep_inds = [rl_i, rc_i, rr_i]
 
 @numba.jit('void(float64[:,:,:],float64[:,:,:])',nopython=True, cache=True)
 def laplace_op_noflux_boundaries(A, D):
@@ -81,26 +86,64 @@ def calc_diffusion(y, diff_terms, p0):
 
 @numba.jit('void(float64[:,:,:],float64[:,:,:],float64[:,:],float64[:])',cache=True,nopython=True)
 def calc_rxn(y, d_y, nut_avail, p0):
-    dx, Dc,  rc, rS, rR,    Hn, Kn,  Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = p0
+#     dx, Dc,  rc, rS, rR,    Hn, Kn,  Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = p0
+    dx, Dc,  rc, rp,    Kn,  Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = p0
+    calc_diffusion(y, diff_terms)
+    
     # Growth term
-    nut_avail[:] = hill(y[n_i,:,:], Hn, Kn)
-
+    nut_avail[:] = hill(y[n_i,:,:], 2.5, Kn)
+    
     # Cell growth and diffusion
     for ind in cell_inds:
-        #d_y[ind,:,:] = (dx)*Dc*diff_terms[ind,:,:] + rc * nut_avail * y[ind,:,:]
         d_y[ind,:,:] = rc * nut_avail * y[ind,:,:]
-
+    
     # Nutrient consumption
-    d_y[n_i,:,:] =  -np.sqrt(dx)*kn * nut_avail * (y[cp_i,:,:]+y[cs_i,:,:])
-
+    d_y[n_i,:,:] = (dx)*Dn*diff_terms[n_i,:,:] - kn * nut_avail * y[cell_inds,:,:].sum(axis=0)
+    
     # AHL production
-    d_y[a_i,:,:] =  np.sqrt(dx)*xa * y[s_i,:,:]*(y[cp_i,:,:]+y[cs_i,:,:]) - pa * y[a_i,:,:] - dx * Da * 0.1 * y[a_i,:,:]
-
+    for cell_i, ahl_i, syn_i in zip(cell_inds, ahl_inds, syn_inds):
+        d_y[ahl_i,:,:] = (dx)*Da*diff_terms[ahl_i,:,:] + xa * y[syn_i,:,:]*y[cell_i,:,:] - pa * y[ahl_i,:,:]
+    
     # Synthase production
-    d_y[s_i,:,:] = ( xs * np.greater(y[cp_i,:,:],od) * hill(y[a_i,:,:], hS, kS) * hillN(y[r_i,:,:], hC, kC) + xS * np.greater(y[cs_i,:,:],od) - rc * y[s_i,:,:]* np.greater(y[cp_i,:,:]+y[cs_i,:,:],od)) * nut_avail - rS * y[s_i,:,:]
+    # Left synthase 
+    d_y[sl_i,:,:] = np.greater(y[cl_i,:,:],col_thresh) * nut_avail * (
+                        xs * hill(y[ac_i,:,:], hS, kS) * hillN(y[rc_i,:,:], hC, kC) + 
+                        xs * hill(y[ar_i,:,:], hS, kS) * hillN(y[rr_i,:,:], hC, kC) + 
+                        rc * y[sl_i,:,:]) - rp * y[sl_i,:,:]
+    
+    # center synthase 
+    d_y[sc_i,:,:] = np.greater(y[cc_i,:,:],col_thresh) * nut_avail * (
+                        xs * hill(y[al_i,:,:], hS, kS) * hillN(y[rl_i,:,:], hC, kC) + 
+                        xs * hill(y[ar_i,:,:], hS, kS) * hillN(y[rr_i,:,:], hC, kC) + 
+                        rc * y[sc_i,:,:]) - rp * y[sc_i,:,:]
+    
+    # right synthase 
+    d_y[sr_i,:,:] = np.greater(y[cr_i,:,:],col_thresh) * nut_avail * (
+                        xs * hill(y[al_i,:,:], hS, kS) * hillN(y[rl_i,:,:], hC, kC) + 
+                        xs * hill(y[ac_i,:,:], hS, kS) * hillN(y[rc_i,:,:], hC, kC) + 
+                        rc * y[sr_i,:,:]) - rp * y[sr_i,:,:]
 
     # Repressor production
-    d_y[r_i,:,:] = ( xr  * hill(y[a_i,:,:], hR, kR) - rc * y[r_i,:,:]) * nut_avail * np.greater(y[cp_i,:,:],od) - rR * y[r_i,:,:]
+    # left repressor
+    d_y[rl_i,:,:] = nut_avail *(
+            xr * hill(y[ac_i,:,:], hR, kR) * np.greater(y[cr_i,:,:],col_thresh) + 
+            xr * hill(y[ar_i,:,:], hR, kR) * np.greater(y[cc_i,:,:],col_thresh) -
+            rc * y[rl_i,:,:]
+        ) - rp * y[rl_i,:,:]
+    
+    # center repressor
+    d_y[rc_i,:,:] = nut_avail *(
+            xr * hill(y[al_i,:,:], hR, kR) * np.greater(y[cr_i,:,:],col_thresh) + 
+            xr * hill(y[ar_i,:,:], hR, kR) * np.greater(y[cl_i,:,:],col_thresh) -
+            rc * y[rc_i,:,:]
+        ) - rp * y[rc_i,:,:]
+    
+    # right repressor
+    d_y[rr_i,:,:] = nut_avail *(
+            xr * hill(y[ac_i,:,:], hR, kR) * np.greater(y[cl_i,:,:],col_thresh) + 
+            xr * hill(y[al_i,:,:], hR, kR) * np.greater(y[cc_i,:,:],col_thresh) -
+            rc * y[rr_i,:,:]
+        ) - rp * y[rr_i,:,:]
 
 @numba.jit('void(float64[:,:,:],float64[:,:,:],float64[:,:,:],float64[:,:],float64[:])',cache=True,nopython=True)
 def calc_f(y, d_y, diff_terms, nut_avail, p0):
@@ -232,8 +275,6 @@ class Jacobian(object):
 
     def calc_rxn_jac(self, t, y):
         Dc,  rc, rS, rR,   Hn,  Kn,  Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = self.p0
-        dx = self.dx
-        scale = np.sqrt(dx)
 #         dcdcdt_indices, dcdndt_indices, dndndt_indices, dndcdt_indices = self.rxn_indices_list
         i = 0
         nut_avail = hill(y[n_i,:,:], Hn, Kn)
@@ -260,37 +301,46 @@ class Jacobian(object):
 
         #dn/(dcdt)
         v, u = n_i, cp_i
-        val_arr = -scale*kn*nut_avail
+        val_arr = -kn*nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         v, u = n_i, cs_i
-        val_arr = -scale*kn*nut_avail
+        val_arr = -kn*nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #dn/(dndt)
         v, u = n_i, n_i
-        val_arr = -scale*kn*dnut_avail*(y[cp_i,:,:]+y[cs_i,:,:])
+        val_arr = -kn*dnut_avail*(y[cp_i,:,:]+y[cs_i,:,:])
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dsdt)
         v, u = a_i, s_i
-        val_arr = scale*xa*y[cell_inds,:,:].sum(axis=0)
+        val_arr = xa*y[cell_inds,:,:].sum(axis=0)
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dcsdt)
         v, u = a_i, cs_i
-        val_arr = scale*xa*y[s_i,:,:]
+        val_arr = xa*y[s_i,:,:]
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dcpdt)
         v, u = a_i, cp_i
-        val_arr = scale*xa*y[s_i,:,:]
+        val_arr = xa*y[s_i,:,:]
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dadt)
         v, u = a_i, a_i
-        val_arr = -(pa+dx*0.1*Da)*np.ones_like(nut_avail)
+        val_arr = -(pa+dx*0.2*Da)*np.ones_like(nut_avail)
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
+
+        #ds/(dcpdt)
+        #v, u = s_i, cp_i
+        #val_arr = 0 * nut_avail# hill(y[a_i,:,:], hS, kS) * hillN(y[r_i,:,:], hC, kC) * nut_avail
+        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
+        #
+        #v, u = s_i, cs_i
+        #val_arr = 0 * nut_avail
+        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #ds/(dndt)
         v, u = s_i, n_i
@@ -312,6 +362,11 @@ class Jacobian(object):
         v, u = s_i, r_i
         val_arr = -xs * np.greater(y[cp_i,:,:],od) * hill(y[a_i,:,:], hS, kS) * dhillda(y[r_i,:,:], hC, kC) * nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
+
+        #dr/(dcpdt)
+        #v, u = r_i, cp_i
+        #val_arr = xr * hill(y[a_i,:,:], hR, kR) * nut_avail
+        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #dr/(dadt)
         v, u = r_i, a_i
@@ -359,9 +414,9 @@ class Simulator(object):
     '''
     Instances of this class are initialized with information requried to simulate an experimental pad and compare to data.
     '''
-    def __init__(self, scale=32):
+    def __init__(self):
         self.basedims = np.array([4,4])
-        self.set_scale(scale)
+        self.set_scale(32)
         self.t_eval = np.linspace(0,11*60*60,200)
         ns, nh, nw = self.initial_array.shape
         self.initial_array[n_i,:,:] = 100
@@ -391,13 +446,13 @@ class Simulator(object):
         atol = np.zeros((species, nh, nw), dtype=np.float64,order='C')# + 1e-7
         atol[cs_i,:,:] = 1e-3*np.ones((nh, nw), dtype=np.float64)
         atol[cp_i,:,:] = 1e-3*np.ones((nh, nw), dtype=np.float64)
-        atol[n_i,:,:]  = 1e-2*np.ones((nh, nw), dtype=np.float64)
-        atol[a_i,:,:]  = 1e1*np.ones((nh, nw), dtype=np.float64)
-        atol[s_i,:,:]  = 1e1*np.ones((nh, nw), dtype=np.float64)
-        atol[r_i,:,:]  = 1e1*np.ones((nh, nw), dtype=np.float64)
+        atol[n_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
+        atol[a_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
+        atol[s_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
+        atol[r_i,:,:]  = 1e-3*np.ones((nh, nw), dtype=np.float64)
         self.atol = atol
         self.atol.shape = species*nh*nw
-        self.rtol = np.float64(1e-3)
+        self.rtol = np.float64(1e-4)
         self.scale = scale
         self.jacobian = Jacobian(self.dims)
 
