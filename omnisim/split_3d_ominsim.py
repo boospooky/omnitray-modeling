@@ -180,16 +180,17 @@ def calc_rxn(y, d_y, nut_avail, p0):
     dx, Dc,  rc, rS, rR,    Hn, Kn, Dn,   kn, Da, xa, xs, xS, xr, hS, kS, hR, kR, hC, kC, pa, leak, od = p0
     # Growth term
     nut_avail[:] = hill(y[n_i,:,:], Hn, Kn)
+    scale = np.sqrt(dx)
 
     # Cell growth and diffusion
     for ind in cell_inds:
         d_y[ind,:,:] = rc * nut_avail * y[ind,:,:]
 
     # Nutrient consumption
-    d_y[n_i,:,:] =  -kn * nut_avail * (y[cp_i,:,:]+y[cs_i,:,:])
+    d_y[n_i,:,:] =  -scale*kn * nut_avail * (y[cp_i,:,:]+y[cs_i,:,:])
 
     # AHL production
-    d_y[a_i,:,:] =  np.sqrt(dx)*xa * y[s_i,:,:]*(y[cp_i,:,:]+y[cs_i,:,:]) # - pa * y[a_i,:,:]
+    d_y[a_i,:,:] =  scale*xa * y[s_i,:,:]*(y[cp_i,:,:]+y[cs_i,:,:]) # - pa * y[a_i,:,:]
 
     # Synthase production
     d_y[s_i,:,:] = ( xs * np.greater(y[cp_i,:,:],od) * hill(y[a_i,:,:], hS, kS) * hillN(y[r_i,:,:], hC, kC) + xS * np.greater(y[cs_i,:,:],od) - rc * y[s_i,:,:]) * nut_avail - rS * y[s_i,:,:]
@@ -367,6 +368,7 @@ class Jacobian(object):
         species,n_z, n_h, n_w, dx = self.dims
 #         dcdcdt_indices, dcdndt_indices, dndndt_indices, dndcdt_indices = self.rxn_indices_list
         cs_i, cp_i, n_i, a_i, s_i, r_i = np.arange(species)
+        scale = np.sqrt(dx)
 
         i = 0
         nut_avail = hill(y[n_i,:,:], Hn, Kn)
@@ -393,46 +395,32 @@ class Jacobian(object):
 
         #dn/(dcdt)
         v, u = n_i, cp_i
-        val_arr = -kn*nut_avail
+        val_arr = -scale*kn*nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         v, u = n_i, cs_i
-        val_arr = -kn*nut_avail
+        val_arr = -scale*kn*nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
         
         #dn/(dndt)
         v, u = n_i, n_i
-        val_arr = -kn*dnut_avail*(y[cp_i,:,:]+y[cs_i,:,:])
+        val_arr = -scale*kn*dnut_avail*(y[cp_i,:,:]+y[cs_i,:,:])
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dsdt)
         v, u = a_i, s_i
-        val_arr = np.sqrt(dx)*xa*y[cell_inds,:,:].sum(axis=0)
+        val_arr = scale*xa*y[cell_inds,:,:].sum(axis=0)
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dcsdt)
         v, u = a_i, cs_i
-        val_arr = np.sqrt(dx)*xa*y[s_i,:,:]
+        val_arr = scale*xa*y[s_i,:,:]
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #da/(dcpdt)
         v, u = a_i, cp_i
-        val_arr = np.sqrt(dx)*xa*y[s_i,:,:]
+        val_arr = scale*xa*y[s_i,:,:]
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-
-        #da/(dadt) moved to diffusion calculation
-        # v, u = a_i, a_i
-        # val_arr = -pa*np.ones_like(nut_avail)
-        # i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-
-        #ds/(dcpdt)
-        #v, u = s_i, cp_i
-        #val_arr = 0 * nut_avail# hill(y[a_i,:,:], hS, kS) * hillN(y[r_i,:,:], hC, kC) * nut_avail
-        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-        #
-        #v, u = s_i, cs_i
-        #val_arr = 0 * nut_avail
-        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #ds/(dndt)
         v, u = s_i, n_i
@@ -454,11 +442,6 @@ class Jacobian(object):
         v, u = s_i, r_i
         val_arr = -xs * np.greater(y[cp_i,:,:],od) * hill(y[a_i,:,:], hS, kS) * dhillda(y[r_i,:,:], hC, kC) * nut_avail
         i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
-
-        #dr/(dcpdt)
-        #v, u = r_i, cp_i
-        #val_arr = xr * hill(y[a_i,:,:], hR, kR) * nut_avail
-        #i = self.assign_rxn_vals(self.rxn_indices_dict[(v,u)], val_arr,i)
 
         #dr/(dadt)
         v, u = r_i, a_i
@@ -507,7 +490,7 @@ class Simulator(object):
     Instances of this class are initialized with information requried to simulate an experimental pad and compare to data.
     '''
     def __init__(self, scale=8):
-        self.basedims = np.array([2,4,4])
+        self.basedims = np.array([2,4,12])
         self.set_scale(scale)
         self.t_eval = np.linspace(0,24*60,200)
 

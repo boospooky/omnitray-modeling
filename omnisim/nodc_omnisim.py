@@ -90,7 +90,7 @@ def calc_rxn(y, d_y, nut_avail, p0):
     d_y[n_i,:,:] =  -kn * nut_avail * (y[cp_i,:,:]+y[cs_i,:,:])
 
     # AHL production
-    d_y[a_i,:,:] =  np.square(dx)*xa * y[s_i,:,:]*(y[cp_i,:,:]+y[cs_i,:,:]) - pa * y[a_i,:,:] 
+    d_y[a_i,:,:] =  np.sqrt(dx)*xa * y[s_i,:,:]*(y[cp_i,:,:]+y[cs_i,:,:]) - pa * y[a_i,:,:] 
 
     # Synthase production
     d_y[s_i,:,:] = ( xs * np.greater(y[cp_i,:,:],od) * hill(y[a_i,:,:], hS, kS) * hillN(y[r_i,:,:], hC, kC) + xS * np.greater(y[cs_i,:,:],od) - rc * y[s_i,:,:]) * nut_avail - rS * y[s_i,:,:]
